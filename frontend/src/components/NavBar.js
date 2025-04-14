@@ -22,7 +22,7 @@ const NavBar = () => {
           <SecurityIcon />
         </IconButton>
         <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-          Mobile App Security Framework
+          Trishul - Mobile App Security Framework
         </Typography>
         <Box sx={{ display: 'flex', alignItems: 'center' }}>
           <Chip

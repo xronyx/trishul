@@ -1,6 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Box, Paper, Typography, Button, Stack, IconButton } from '@mui/material';
 import MonacoEditor from 'react-monaco-editor';
+import '../setupMonaco'; // Import Monaco configuration with proper syntax highlighting
 import { useDevice } from '../contexts/DeviceContext';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
@@ -14,6 +15,7 @@ const ScriptEditor = () => {
   const [script, setScript] = useState(ANDROID_BASIC_TEMPLATE);
   const [isHooked, setIsHooked] = useState(false);
   const { selectedDevice, selectedApp, hookApp, unhookApp } = useDevice();
+  const [editorMounted, setEditorMounted] = useState(false);
   
   // Menu state
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
@@ -21,6 +23,32 @@ const ScriptEditor = () => {
   const [showSamplesDialog, setShowSamplesDialog] = useState(false);
   
   const menuButtonRef = useRef(null);
+
+  // Effect to ensure Monaco JavaScript language is registered
+  useEffect(() => {
+    // Clean up function
+    return () => {
+      setEditorMounted(false);
+    };
+  }, []);
+
+  const handleEditorDidMount = (editor, monacoInstance) => {
+    setEditorMounted(true);
+    
+    // Force refresh editor to ensure syntax highlighting appears
+    setTimeout(() => {
+      editor.layout();
+      editor.focus();
+      
+      // Manually trigger syntax highlighting refresh
+      const model = editor.getModel();
+      if (model) {
+        const value = model.getValue();
+        model.setValue('');
+        model.setValue(value);
+      }
+    }, 100);
+  };
 
   const handleEditorChange = (value) => {
     setScript(value);
@@ -131,6 +159,18 @@ const ScriptEditor = () => {
     theme: 'vs-dark',
     minimap: {
       enabled: true
+    },
+    fontSize: 14,
+    fontFamily: 'Consolas, "Courier New", monospace',
+    scrollBeyondLastLine: false,
+    formatOnType: true,
+    formatOnPaste: true,
+    codeLens: true,
+    lineNumbersMinChars: 3,
+    renderControlCharacters: true,
+    scrollbar: {
+      verticalScrollbarSize: 10,
+      horizontalScrollbarSize: 10
     }
   };
 
@@ -203,7 +243,18 @@ const ScriptEditor = () => {
           )}
         </Stack>
       </Box>
-      <Box sx={{ flex: 1, overflow: 'hidden' }}>
+      <Box sx={{ 
+        flex: 1, 
+        overflow: 'hidden',
+        position: 'relative',
+        '& .monaco-editor': {
+          position: 'absolute',
+          top: 0,
+          right: 0,
+          bottom: 0,
+          left: 0
+        }
+      }}>
         <MonacoEditor
           width="100%"
           height="100%"
@@ -212,6 +263,7 @@ const ScriptEditor = () => {
           value={script}
           options={editorOptions}
           onChange={handleEditorChange}
+          editorDidMount={handleEditorDidMount}
         />
       </Box>
       

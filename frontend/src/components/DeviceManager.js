@@ -225,9 +225,12 @@ const DeviceManager = () => {
         <DialogTitle>Upload Frida Server</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            Upload the Frida server binary compatible with your device. The server
+            Upload the Frida server binary (version 16.2.2) compatible with your device. The server
             will be installed to /data/local/tmp/ and given executable permissions.
           </DialogContentText>
+          <Typography variant="caption" color="primary" sx={{ display: 'block', mt: 1, mb: 2 }}>
+            Note: This application requires Frida server version 16.2.2 specifically
+          </Typography>
           <Box sx={{ mt: 2 }}>
             <Button
               variant="contained"

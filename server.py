@@ -45,6 +45,37 @@ def serve_frontend(path):
     else:
         return send_from_directory(app.static_folder, 'index.html')
 
+# Helper function to verify package exists and get the correct case
+def verify_package_name(device_id, package_name):
+    try:
+        device = connected_devices.get(device_id)
+        if not device:
+            return None, "Device not connected"
+        
+        # Get a list of all installed apps from the device
+        apps = device.enumerate_applications()
+        
+        # First check for exact match
+        for app in apps:
+            if app.identifier.lower() == package_name.lower():
+                return app.identifier, None  # Return the correct case
+        
+        # If no exact match, check for partial matches
+        partial_matches = []
+        for app in apps:
+            if package_name.lower() in app.identifier.lower():
+                partial_matches.append({
+                    'name': app.name,
+                    'identifier': app.identifier
+                })
+        
+        if partial_matches:
+            return None, partial_matches
+        
+        return None, "Package not found"
+    except Exception as e:
+        return None, str(e)
+
 # API routes
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
@@ -66,6 +97,43 @@ def get_devices():
                     })
         
         return jsonify(devices)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/search-apps', methods=['GET'])
+def search_apps():
+    device_id = request.args.get('deviceId')
+    query = request.args.get('query', '').lower()
+    
+    if not device_id:
+        return jsonify({'error': 'Device ID is required'}), 400
+    
+    if device_id not in connected_devices:
+        return jsonify({'error': 'Device not connected'}), 400
+    
+    try:
+        device = connected_devices[device_id]
+        apps = device.enumerate_applications()
+        
+        if query:
+            # Filter apps based on the search query
+            filtered_apps = [
+                {'name': app.name, 'identifier': app.identifier} 
+                for app in apps 
+                if query in app.name.lower() or query in app.identifier.lower()
+            ]
+        else:
+            filtered_apps = [{'name': app.name, 'identifier': app.identifier} for app in apps]
+        
+        # Sort by relevance (exact matches first, then by name)
+        filtered_apps.sort(key=lambda x: (
+            0 if query == x['identifier'].lower() else 
+            1 if query == x['name'].lower() else
+            2 if query in x['identifier'].lower() else 
+            3
+        ))
+        
+        return jsonify(filtered_apps)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -97,6 +165,22 @@ def connect_device():
         device = frida.get_device(device_id)
         connected_devices[device_id] = device
         socketio.emit('status', {'message': f'Connected to {device_id}'})
+        
+        # Check frida-server version
+        try:
+            version_result = subprocess.run(
+                [ADB_PATH, '-s', device_id, 'shell', f'su -c "{FRIDA_SERVER_PATH} --version"'],
+                capture_output=True, text=True
+            )
+            server_version = version_result.stdout.strip()
+            
+            if "16.2.2" in server_version:
+                socketio.emit('status', {'message': f'Frida server {server_version} detected (compatible)'})
+            else:
+                socketio.emit('status', {'message': f'Warning: Frida server {server_version} detected. This app is designed for version 16.2.2'})
+        except Exception as e:
+            # Just log it, don't block the connection
+            socketio.emit('status', {'message': f'Could not verify Frida server version: {str(e)}'})
         
         return jsonify({'status': 'connected', 'deviceId': device_id})
     except Exception as e:
@@ -156,6 +240,24 @@ def hook_app():
     try:
         device = connected_devices[device_id]
         
+        # Verify the package name and get the correct case if needed
+        correct_app_id, result = verify_package_name(device_id, app_id)
+        
+        if not correct_app_id:
+            if isinstance(result, list):
+                # We found similar package names
+                suggestions = [f"{app['name']} ({app['identifier']})" for app in result[:5]]
+                return jsonify({
+                    'error': f"Could not find exact package name '{app_id}'. Did you mean one of these?",
+                    'suggestions': suggestions
+                }), 400
+            else:
+                # No package found with that name
+                return jsonify({'error': f"Package verification failed: {result}"}), 400
+        
+        # Use the correct case for the app_id
+        app_id = correct_app_id
+        
         # Define message callback
         def on_message(message, data):
             if message['type'] == 'send':
@@ -171,9 +273,104 @@ def hook_app():
                     'error': message['description']
                 })
         
+        # Check if the application is running
+        is_running = False
+        try:
+            # Try to get the process by name
+            processes = device.enumerate_processes()
+            for process in processes:
+                if process.name == app_id:
+                    is_running = True
+                    break
+        except Exception as e:
+            socketio.emit('status', {'message': f'Error checking if app is running: {str(e)}'})
+        
+        # If not running, try to spawn it
+        pid = None
+        if not is_running:
+            try:
+                socketio.emit('status', {'message': f'App {app_id} is not running. Attempting to launch it...'})
+                pid = device.spawn([app_id])
+                socketio.emit('status', {'message': f'App launched with PID: {pid}'})
+                time.sleep(1)  # Give it a moment to start up
+            except Exception as e:
+                socketio.emit('status', {'message': f'Failed to launch app: {str(e)}'})
+                # Even if spawn fails, we'll still try to attach directly
+        
         # Attach to the process
-        session = device.attach(app_id)
-        frida_sessions[device_id] = session
+        try:
+            if pid:
+                # If we spawned it, attach to the PID
+                session = device.attach(pid)
+                device.resume(pid)  # Resume the process after attaching
+            else:
+                # Try to attach by name if we didn't spawn it
+                session = device.attach(app_id)
+            
+            frida_sessions[device_id] = session
+        except Exception as e:
+            error_msg = str(e)
+            if "unable to find process with name" in error_msg:
+                # Try attaching by searching for a partial package name match or by PID
+                found = False
+                processes = device.enumerate_processes()
+                
+                # First try exact match on process name
+                for process in processes:
+                    if process.name == app_id:
+                        socketio.emit('status', {'message': f'Found process: {process.name} (PID: {process.pid})'})
+                        session = device.attach(process.pid)
+                        frida_sessions[device_id] = session
+                        found = True
+                        break
+                
+                # If not found, try partial match
+                if not found:
+                    for process in processes:
+                        if app_id in process.name:
+                            socketio.emit('status', {'message': f'Found similar process: {process.name} (PID: {process.pid})'})
+                            session = device.attach(process.pid)
+                            frida_sessions[device_id] = session
+                            found = True
+                            break
+                
+                # If still not found, run an adb shell command to try to start the app and get its PID
+                if not found:
+                    try:
+                        socketio.emit('status', {'message': f'Trying to start app via activity manager...'})
+                        # Try to start the app using activity manager
+                        cmd = f'monkey -p {app_id} -c android.intent.category.LAUNCHER 1'
+                        adb_result = subprocess.run(
+                            [ADB_PATH, '-s', device_id, 'shell', cmd],
+                            capture_output=True, text=True
+                        )
+                        time.sleep(2)  # Wait for app to start
+                        
+                        # Get the PID after trying to start the app
+                        pid_cmd = f'pidof {app_id}'
+                        pid_result = subprocess.run(
+                            [ADB_PATH, '-s', device_id, 'shell', pid_cmd],
+                            capture_output=True, text=True
+                        )
+                        
+                        if pid_result.stdout.strip():
+                            try:
+                                app_pid = int(pid_result.stdout.strip())
+                                socketio.emit('status', {'message': f'App started with PID: {app_pid}'})
+                                session = device.attach(app_pid)
+                                frida_sessions[device_id] = session
+                                found = True
+                            except ValueError:
+                                socketio.emit('status', {'message': f'Invalid PID: {pid_result.stdout.strip()}'})
+                    except Exception as start_error:
+                        socketio.emit('status', {'message': f'Error trying to start app: {str(start_error)}'})
+                
+                if not found:
+                    return jsonify({
+                        'error': f"Could not find process with name '{app_id}'. Make sure the app is installed and the package name is correct. Try launching the app manually first."
+                    }), 500
+            else:
+                return jsonify({'error': error_msg}), 500
         
         # Create and load script
         script = session.create_script(script_content)

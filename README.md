@@ -1,8 +1,10 @@
 # Trishul - Mobile App Security Framework
 
-![Trishul Logo](docs/files/images/trishul_logo.png)
+<p align="center">
+  <img src="docs/files/images/trishul_logo.png" width="300" alt="Trishul Logo">
+</p>
 
-A web-based framework for mobile application security testing. MASF simplifies the process of setting up and using tools like Frida for application hooking and security analysis.
+A web-based framework for mobile application security testing. Trishul simplifies the process of setting up and using tools like Frida for application hooking and security analysis.
 
 ![Trishul Screenshot](docs/files/images/trishul_screenshot.png)
 

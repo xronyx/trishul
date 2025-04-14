@@ -1,0 +1,23 @@
+version: '3'
+
+services:
+  masf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: masf
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+      - /etc/localtime:/etc/localtime:ro
+    # USB device passthrough for ADB
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+      - /dev/usb:/dev/usb
+    # Map the ADB server port
+    network_mode: "host"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC 

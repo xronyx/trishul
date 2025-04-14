@@ -1,0 +1,48 @@
+# Version control
+.git
+.gitignore
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+*.env
+
+# Node.js
+frontend/node_modules/
+frontend/npm-debug.log
+frontend/yarn-debug.log
+frontend/yarn-error.log
+frontend/build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and data
+logs/
+*.log
+uploads/
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Docker files
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# Documentation
+README.md
+docs/
+
+# Scripts
+start-docker.sh
+start-docker.bat 

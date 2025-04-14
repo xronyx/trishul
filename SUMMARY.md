@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Mobile Application Security Framework (MASF) is a web-based platform that simplifies mobile application security testing by providing a centralized interface for managing devices, running Frida scripts, and analyzing results. It eliminates the need for complex setups by handling Frida server management and providing an intuitive interface for script development and execution.
+The Trishul (MASF) is a web-based platform that simplifies mobile application security testing by providing a centralized interface for managing devices, running Frida scripts, and analyzing results. It eliminates the need for complex setups by handling Frida server management and providing an intuitive interface for script development and execution.
 
 ## Architecture
 
@@ -88,4 +88,3 @@ Potential enhancements for future development:
 3. Script result visualization and reporting
 4. Pre-built script marketplace
 5. Collaboration features for team environments
-6. CI/CD pipeline for container image building and distribution 

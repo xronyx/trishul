@@ -258,14 +258,76 @@ def hook_app():
         # Use the correct case for the app_id
         app_id = correct_app_id
         
+        # Modify the script to intercept console.log calls
+        # This wrapper captures console.log, console.error, console.warn and sends them back as messages
+        console_log_wrapper = """
+// Intercept console.log and other console methods
+(function() {
+    const origConsole = {};
+    ['log', 'warn', 'error', 'info', 'debug'].forEach(function(method) {
+        origConsole[method] = console[method];
+        console[method] = function() {
+            // Convert arguments to array and stringify them
+            const args = Array.prototype.slice.call(arguments).map(function(arg) {
+                if (typeof arg === 'object') {
+                    try {
+                        return JSON.stringify(arg);
+                    } catch (e) {
+                        return String(arg);
+                    }
+                }
+                return String(arg);
+            });
+            
+            // Join arguments with space
+            const message = args.join(' ');
+            
+            // Send to our host
+            send({
+                type: 'console.' + method,
+                message: message
+            });
+            
+            // Call original method
+            return origConsole[method].apply(console, arguments);
+        };
+    });
+})();
+
+// Log that script was successfully loaded
+console.log('Frida script injected and console.log interceptor initialized');
+
+// Original user script begins here
+"""
+        
+        # Combine the wrapper with the original script
+        enhanced_script = console_log_wrapper + script_content
+        
         # Define message callback
         def on_message(message, data):
             if message['type'] == 'send':
-                socketio.emit('frida_message', {
-                    'deviceId': device_id,
-                    'appId': app_id,
-                    'payload': message['payload']
-                })
+                payload = message['payload']
+                
+                # Check if this is a console log message
+                if isinstance(payload, dict) and 'type' in payload and payload['type'].startswith('console.'):
+                    # Special handling for console messages
+                    log_type = payload['type'].split('.')[1]  # 'log', 'error', etc.
+                    message_text = payload['message']
+                    
+                    # Format message for the UI
+                    socketio.emit('frida_console', {
+                        'deviceId': device_id,
+                        'appId': app_id,
+                        'logType': log_type,
+                        'message': message_text
+                    })
+                else:
+                    # Regular Frida message
+                    socketio.emit('frida_message', {
+                        'deviceId': device_id,
+                        'appId': app_id,
+                        'payload': payload
+                    })
             elif message['type'] == 'error':
                 socketio.emit('frida_error', {
                     'deviceId': device_id,
@@ -373,7 +435,7 @@ def hook_app():
                 return jsonify({'error': error_msg}), 500
         
         # Create and load script
-        script = session.create_script(script_content)
+        script = session.create_script(enhanced_script)
         script.on('message', on_message)
         script.load()
         running_scripts[f"{device_id}_{app_id}"] = script

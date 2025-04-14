@@ -44,6 +44,22 @@ export const SocketProvider = ({ children }) => {
         timestamp: new Date().toISOString(),
       });
     });
+    
+    // New handler for console.log messages from Frida
+    newSocket.on('frida_console', (data) => {
+      const logType = data.logType || 'log';
+      const icon = getLogTypeIcon(logType);
+      
+      addMessage({
+        type: 'console',
+        subtype: logType,
+        text: `${icon} ${data.message}`,
+        raw: data.message,
+        deviceId: data.deviceId,
+        appId: data.appId,
+        timestamp: new Date().toISOString(),
+      });
+    });
 
     newSocket.on('frida_error', (data) => {
       addMessage({
@@ -62,6 +78,22 @@ export const SocketProvider = ({ children }) => {
       newSocket.disconnect();
     };
   }, []);
+  
+  // Helper function to get appropriate icon for log type
+  const getLogTypeIcon = (logType) => {
+    switch(logType) {
+      case 'error':
+        return '🔴';
+      case 'warn':
+        return '⚠️';
+      case 'info':
+        return 'ℹ️';
+      case 'debug':
+        return '🔍';
+      default:
+        return '📋';
+    }
+  };
 
   const addMessage = (message) => {
     setMessages((prevMessages) => [...prevMessages, message]);

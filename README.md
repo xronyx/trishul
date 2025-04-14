@@ -29,14 +29,14 @@ A web-based framework for mobile application security testing. Trishul simplifie
 
 ### Option 1: Docker (Recommended)
 
-The easiest way to set up MASF is using Docker:
+The easiest way to set up Trishul is using Docker:
 
 1. Install [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/)
 
 2. Clone the repository:
    ```
-   git clone https://github.com/yourusername/mobile-app-security-framework.git
-   cd mobile-app-security-framework
+   git clone https://github.com/xronyx/trishul.git
+   cd trishul
    ```
 
 3. Start the container:
@@ -60,8 +60,8 @@ The easiest way to set up MASF is using Docker:
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/mobile-app-security-framework.git
-   cd mobile-app-security-framework
+   git clone https://github.com/xronyx/trishul.git
+   cd trishul
    ```
 
 2. Run the deployment script:
@@ -122,7 +122,7 @@ If using manual installation:
 
 7. View script output and system logs in the Log Output panel
 
-8. Use the Terminal panel to execute shell commands directly on the device
+8. Use the Terminal panel to execute shell commands directly on the device (under maintainance)
 
 ## Docker USB Passthrough
 

@@ -202,9 +202,49 @@ def disconnect_device():
         if device_id in connected_devices:
             del connected_devices[device_id]
         
+        socketio.emit('status', {'message': f'Disconnected from {device_id}'})
         return jsonify({'status': 'disconnected', 'deviceId': device_id})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/devices/restart-adb', methods=['POST'])
+def restart_adb_server():
+    try:
+        # Kill the ADB server
+        socketio.emit('status', {'message': 'Restarting ADB server...'})
+        kill_result = subprocess.run([ADB_PATH, 'kill-server'], capture_output=True, text=True)
+        
+        # Wait briefly
+        time.sleep(1)
+        
+        # Start the ADB server
+        start_result = subprocess.run([ADB_PATH, 'start-server'], capture_output=True, text=True)
+        
+        # Give it a moment to detect devices
+        time.sleep(2)
+        
+        # Check for devices
+        devices_result = subprocess.run([ADB_PATH, 'devices'], capture_output=True, text=True)
+        devices = devices_result.stdout.strip().split('\n')[1:]
+        device_count = sum(1 for line in devices if line.strip())
+        
+        socketio.emit('status', {
+            'message': f'ADB server restarted. {device_count} device(s) detected.'
+        })
+        
+        return jsonify({
+            'success': True,
+            'message': f'ADB server restarted. {device_count} device(s) detected.',
+            'details': {
+                'kill_output': kill_result.stdout if kill_result.stdout else kill_result.stderr,
+                'start_output': start_result.stdout if start_result.stdout else start_result.stderr,
+                'devices': devices_result.stdout
+            }
+        })
+    except Exception as e:
+        error_message = f'Error restarting ADB server: {str(e)}'
+        socketio.emit('status', {'message': error_message, 'type': 'error'})
+        return jsonify({'success': False, 'message': error_message}), 500
 
 @app.route('/api/apps', methods=['GET'])
 def get_apps():

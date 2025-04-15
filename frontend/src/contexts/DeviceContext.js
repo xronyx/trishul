@@ -12,19 +12,20 @@ export const DeviceProvider = ({ children }) => {
   const [selectedApp, setSelectedApp] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   const fetchDevices = async () => {
     try {
-      setLoading(true);
-      setError(null);
+      setIsLoading(true);
       const response = await axios.get('/api/devices');
       setDevices(response.data);
       return response.data;
-    } catch (err) {
-      setError(err.response?.data?.error || err.message);
+    } catch (error) {
+      console.error('Error fetching devices:', error);
+      setError('Failed to fetch devices');
       return [];
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
@@ -160,6 +161,28 @@ export const DeviceProvider = ({ children }) => {
     }
   };
 
+  const restartAdbServer = async () => {
+    try {
+      setIsLoading(true);
+      const response = await axios.post('/api/devices/restart-adb');
+      
+      if (response.data.success) {
+        // Fetch devices again after restarting ADB
+        await fetchDevices();
+        return { success: true, message: response.data.message || 'ADB server restarted successfully' };
+      } else {
+        setError(response.data.message || 'Failed to restart ADB server');
+        return { success: false, message: response.data.message || 'Failed to restart ADB server' };
+      }
+    } catch (error) {
+      console.error('Error restarting ADB server:', error);
+      setError('Failed to restart ADB server');
+      return { success: false, message: 'Failed to restart ADB server' };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <DeviceContext.Provider
       value={{
@@ -169,6 +192,7 @@ export const DeviceProvider = ({ children }) => {
         selectedApp,
         loading,
         error,
+        isLoading,
         fetchDevices,
         connectDevice,
         disconnectDevice,
@@ -179,6 +203,7 @@ export const DeviceProvider = ({ children }) => {
         uploadFridaServer,
         setSelectedDevice,
         setSelectedApp,
+        restartAdbServer
       }}
     >
       {children}

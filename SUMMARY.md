@@ -1,4 +1,4 @@
-# Mobile Application Security Framework - Project Summary
+# Trishul Mobile App Security Framework - Project Summary
 
 ## Overview
 

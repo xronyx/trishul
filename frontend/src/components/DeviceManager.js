@@ -23,8 +23,12 @@ import {
   DialogContent,
   DialogContentText,
   DialogActions,
+  Snackbar,
+  Alert,
+  Tooltip,
 } from '@mui/material';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import UsbIcon from '@mui/icons-material/Usb';
 import PhoneAndroidIcon from '@mui/icons-material/PhoneAndroid';
 import AppsIcon from '@mui/icons-material/Apps';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
@@ -37,6 +41,7 @@ const DeviceManager = () => {
     apps,
     selectedApp,
     loading,
+    isLoading,
     error,
     fetchDevices,
     connectDevice,
@@ -45,10 +50,16 @@ const DeviceManager = () => {
     setSelectedDevice,
     setSelectedApp,
     uploadFridaServer,
+    restartAdbServer,
   } = useDevice();
 
   const [openUploadDialog, setOpenUploadDialog] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [snackbar, setSnackbar] = useState({
+    open: false,
+    message: '',
+    severity: 'info'
+  });
 
   useEffect(() => {
     // Fetch devices on component mount
@@ -104,6 +115,49 @@ const DeviceManager = () => {
     }
   };
 
+  const handleRestartAdb = async () => {
+    try {
+      setSnackbar({
+        open: true,
+        message: 'Restarting ADB server to detect USB devices...',
+        severity: 'info'
+      });
+      
+      const result = await restartAdbServer();
+      
+      if (result && result.success) {
+        setSnackbar({
+          open: true,
+          message: result.message,
+          severity: 'success'
+        });
+        
+        // Refresh the device list after restarting ADB
+        fetchDevices();
+      } else {
+        setSnackbar({
+          open: true,
+          message: result?.message || 'Failed to restart ADB server',
+          severity: 'error'
+        });
+      }
+    } catch (error) {
+      console.error('Error restarting ADB server:', error);
+      setSnackbar({
+        open: true,
+        message: `Error restarting ADB server: ${error.message}`,
+        severity: 'error'
+      });
+    }
+  };
+
+  const handleCloseSnackbar = () => {
+    setSnackbar({
+      ...snackbar,
+      open: false
+    });
+  };
+
   return (
     <Paper
       elevation={3}
@@ -116,26 +170,45 @@ const DeviceManager = () => {
       <Box sx={{ p: 1, borderBottom: '1px solid #444', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Typography variant="subtitle2">Device Manager</Typography>
         <Stack direction="row" spacing={1}>
-          <Button
-            variant="contained"
-            size="small"
-            onClick={handleOpenUploadDialog}
-            disabled={!selectedDevice}
-          >
-            Upload Frida Server
-          </Button>
-          <IconButton onClick={handleRefreshDevices} size="small">
-            <RefreshIcon />
-          </IconButton>
+          <Tooltip title="Upload Frida Server to device">
+            <span>
+              <Button
+                variant="contained"
+                size="small"
+                onClick={handleOpenUploadDialog}
+                disabled={!selectedDevice}
+              >
+                Upload Frida Server
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip title="Refresh device list">
+            <IconButton onClick={handleRefreshDevices} size="small">
+              <RefreshIcon />
+            </IconButton>
+          </Tooltip>
         </Stack>
       </Box>
 
       <Box sx={{ p: 2, flex: 1, overflow: 'auto' }}>
-        <Typography variant="body2" gutterBottom>
-          Devices
-        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+          <Typography variant="body2">
+            Devices
+          </Typography>
+          <Tooltip title="Restart ADB server to detect USB devices and prompt for debugging permissions">
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<UsbIcon />}
+              onClick={handleRestartAdb}
+              disabled={isLoading}
+            >
+              USB Debug Permission
+            </Button>
+          </Tooltip>
+        </Box>
         
-        {loading && (
+        {(loading || isLoading) && (
           <Box sx={{ display: 'flex', justifyContent: 'center', my: 2 }}>
             <CircularProgress size={24} />
           </Box>
@@ -150,7 +223,10 @@ const DeviceManager = () => {
         <List dense sx={{ bgcolor: 'background.paper' }}>
           {devices.length === 0 ? (
             <ListItem>
-              <ListItemText primary="No devices found" />
+              <ListItemText 
+                primary="No devices found" 
+                secondary="Connect a device via USB and ensure USB debugging is enabled"
+              />
             </ListItem>
           ) : (
             devices.map((device) => (
@@ -262,6 +338,18 @@ const DeviceManager = () => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={handleCloseSnackbar}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} sx={{ width: '100%' }}>
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Paper>
   );
 };

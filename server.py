@@ -2,12 +2,16 @@ import os
 import json
 import subprocess
 import threading
+import logging
+import time
+import signal
+import sys
 from flask import Flask, request, jsonify, send_from_directory
 from flask_socketio import SocketIO
 from flask_cors import CORS
 import frida
-import time
 from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,27 +19,95 @@ load_dotenv()
 # Configuration from environment variables
 PORT = int(os.getenv('PORT', 5000))
 HOST = os.getenv('HOST', '0.0.0.0')
-DEBUG = os.getenv('DEBUG', 'true').lower() == 'true'
+DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 ADB_PATH = os.getenv('ADB_PATH', 'adb')
 FRIDA_SERVER_PATH = os.getenv('FRIDA_SERVER_PATH', '/data/local/tmp/frida-server')
 LOGS_DIR = os.getenv('LOGS_DIR', './logs')
 UPLOADS_DIR = os.getenv('UPLOADS_DIR', './uploads')
 SECRET_KEY = os.getenv('SECRET_KEY', 'default_secret_key')
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOG_FILE = os.getenv('LOG_FILE', os.path.join(LOGS_DIR, 'server.log'))
+LOG_MAX_SIZE = int(os.getenv('LOG_MAX_SIZE', 10 * 1024 * 1024))  # 10MB by default
+LOG_BACKUP_COUNT = int(os.getenv('LOG_BACKUP_COUNT', 5))  # Keep 5 backup logs by default
+
+# Setup logging
+def setup_logging():
+    """Configure application logging with rotation"""
+    try:
+        # Ensure logs directory exists
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        
+        # Configure root logger
+        root_logger = logging.getLogger()
+        root_logger.setLevel(getattr(logging, LOG_LEVEL))
+        
+        # Console handler for all logs
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        root_logger.addHandler(console_handler)
+        
+        # File handler with rotation for all logs
+        file_handler = RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=LOG_MAX_SIZE,
+            backupCount=LOG_BACKUP_COUNT
+        )
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        root_logger.addHandler(file_handler)
+        
+        return root_logger
+    except Exception as e:
+        # Basic error output if logging setup fails
+        print(f"ERROR setting up logging: {str(e)}")
+        # Return a basic logger as fallback
+        basic_logger = logging.getLogger()
+        basic_logger.setLevel(logging.INFO)
+        basic_logger.addHandler(logging.StreamHandler())
+        return basic_logger
+
+# Initialize logger
+logger = setup_logging()
 
 # Ensure directories exist
-os.makedirs(LOGS_DIR, exist_ok=True)
-os.makedirs(UPLOADS_DIR, exist_ok=True)
+try:
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    logger.info(f"Ensured directories exist: {LOGS_DIR}, {UPLOADS_DIR}")
+except Exception as e:
+    logger.error(f"Failed to create necessary directories: {str(e)}")
+    sys.exit(1)
 
+# Initialize Flask app
 app = Flask(__name__, static_folder='frontend/build')
 app.config['SECRET_KEY'] = SECRET_KEY
 CORS(app)
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", logger=True, engineio_logger=DEBUG)
 
 # Device management
 connected_devices = {}  # device_id -> frida.core.Device
 frida_sessions = {}     # {device_id: {app_id: session}} - nested dict for multiple apps per device
 running_scripts = {}    # {device_id: {app_id: script}} - nested dict for multiple scripts per device
 device_status = {}      # For tracking each device's status separately
+
+# Signal handler for graceful shutdown
+def signal_handler(sig, frame):
+    """Handle termination signals and perform cleanup"""
+    logger.info("Received shutdown signal, cleaning up...")
+    # Clean up Frida sessions
+    for device_id in list(frida_sessions.keys()):
+        for app_id in list(frida_sessions.get(device_id, {}).keys()):
+            try:
+                if frida_sessions[device_id][app_id]:
+                    frida_sessions[device_id][app_id].detach()
+                    logger.info(f"Detached Frida session for device {device_id}, app {app_id}")
+            except Exception as e:
+                logger.error(f"Error detaching Frida session: {str(e)}")
+    logger.info("Shutdown complete")
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # Routes for static frontend
 @app.route('/', defaults={'path': ''})
@@ -793,22 +865,47 @@ def upload_frida_server():
 # WebSocket events
 @socketio.on('connect')
 def handle_connect():
+    logger.info(f"Client connected: {request.sid}")
     socketio.emit('status', {'message': 'Connected to server'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    pass
+    logger.info(f"Client disconnected: {request.sid}")
 
 # Check for ADB
 def check_prerequisites():
+    """Verify that required system dependencies are available"""
     try:
-        subprocess.run([ADB_PATH, 'version'], capture_output=True, check=True)
-        print(f"ADB is installed at {ADB_PATH}")
-    except:
-        print(f"ERROR: ADB is not installed or not found at {ADB_PATH}")
-        print("Please install Android Debug Bridge (ADB) tools")
+        adb_result = subprocess.run([ADB_PATH, 'version'], capture_output=True, check=True, text=True)
+        logger.info(f"ADB is installed: {adb_result.stdout.strip()}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ADB check failed: {e.stderr}")
+        return False
+    except FileNotFoundError:
+        logger.error(f"ADB not found at path: {ADB_PATH}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error checking ADB: {str(e)}")
+        return False
+
+def main():
+    """Main entry point with proper error handling"""
+    try:
+        logger.info(f"Starting server on {HOST}:{PORT} (Debug: {DEBUG})")
+        
+        # Check prerequisites
+        if not check_prerequisites():
+            logger.error("Prerequisites check failed. Please install Android Debug Bridge (ADB) tools")
+            sys.exit(1)
+            
+        # Start the server
+        logger.info(f"Server starting with Flask-SocketIO on {HOST}:{PORT}")
+        socketio.run(app, host=HOST, port=PORT, debug=DEBUG)
+        
+    except Exception as e:
+        logger.critical(f"Failed to start server: {str(e)}")
+        sys.exit(1)
 
 if __name__ == '__main__':
-    check_prerequisites()
-    print(f"Starting server on {HOST}:{PORT} (Debug: {DEBUG})")
-    socketio.run(app, host=HOST, port=PORT, debug=DEBUG) 
+    main() 

@@ -146,6 +146,89 @@ def connect_device():
         return jsonify({'error': 'Device ID is required'}), 400
     
     try:
+        # Check if frida-server exists on the device
+        check_frida = subprocess.run(
+            [ADB_PATH, '-s', device_id, 'shell', f'ls {FRIDA_SERVER_PATH}'],
+            capture_output=True, text=True
+        )
+        
+        frida_server_exists = 'No such file' not in check_frida.stderr and 'not found' not in check_frida.stderr
+        
+        if not frida_server_exists:
+            socketio.emit('status', {'message': f'Frida server not found on device. Checking device architecture...'})
+            
+            # Get device architecture
+            arch_result = subprocess.run(
+                [ADB_PATH, '-s', device_id, 'shell', 'getprop ro.product.cpu.abi'],
+                capture_output=True, text=True
+            )
+            
+            device_arch = arch_result.stdout.strip()
+            socketio.emit('status', {'message': f'Detected device architecture: {device_arch}'})
+            
+            # Map device architecture to frida-server binary
+            arch_map = {
+                'armeabi-v7a': 'frida-server-16.2.2-android-arm',
+                'armeabi': 'frida-server-16.2.2-android-arm',
+                'arm64-v8a': 'frida-server-16.2.2-android-arm64',
+                'x86': 'frida-server-16.2.2-android-x86',
+                'x86_64': 'frida-server-16.2.2-android-x86_64'
+            }
+            
+            server_binary = arch_map.get(device_arch)
+            
+            if not server_binary:
+                # Default to arm64 if architecture detection fails
+                socketio.emit('status', {'message': f'Unknown architecture: {device_arch}, defaulting to arm64'})
+                server_binary = 'frida-server-16.2.2-android-arm64'
+            
+            # Check if the binary exists in the bin directory
+            binary_path = os.path.join('bin', server_binary)
+            if os.path.exists(binary_path):
+                socketio.emit('status', {'message': f'Found matching Frida server binary: {server_binary}'})
+                
+                # Push to device
+                push_result = subprocess.run(
+                    [ADB_PATH, '-s', device_id, 'push', binary_path, FRIDA_SERVER_PATH],
+                    capture_output=True, text=True
+                )
+                
+                if push_result.returncode == 0:
+                    socketio.emit('status', {'message': f'Successfully pushed Frida server to device.'})
+                    
+                    # Set executable permissions - try different methods
+                    chmod_result = subprocess.run(
+                        [ADB_PATH, '-s', device_id, 'shell', f'su -c "chmod 755 {FRIDA_SERVER_PATH}"'],
+                        capture_output=True, text=True
+                    )
+                    
+                    # If standard su -c fails, try su 0 method
+                    if "invalid" in chmod_result.stderr or "not found" in chmod_result.stderr:
+                        socketio.emit('status', {'message': f'First chmod method failed, trying alternative...'})
+                        chmod_result = subprocess.run(
+                            [ADB_PATH, '-s', device_id, 'shell', f'su 0 chmod 755 {FRIDA_SERVER_PATH}'],
+                            capture_output=True, text=True
+                        )
+                    
+                    # If that also fails, try direct chmod (for pre-rooted emulators)
+                    if "invalid" in chmod_result.stderr or "not found" in chmod_result.stderr:
+                        socketio.emit('status', {'message': f'Second chmod method failed, trying direct chmod...'})
+                        chmod_result = subprocess.run(
+                            [ADB_PATH, '-s', device_id, 'shell', f'chmod 755 {FRIDA_SERVER_PATH}'],
+                            capture_output=True, text=True
+                        )
+                    
+                    if chmod_result.returncode == 0:
+                        socketio.emit('status', {'message': f'Set executable permissions on Frida server.'})
+                    else:
+                        socketio.emit('status', {'message': f'Warning: Could not set executable permissions: {chmod_result.stderr}'})
+                else:
+                    socketio.emit('status', {'message': f'Warning: Failed to push Frida server: {push_result.stderr}'})
+                    return jsonify({'error': 'Failed to push Frida server to device'}), 500
+            else:
+                socketio.emit('status', {'message': f'Error: Required Frida server binary not found: {binary_path}'})
+                return jsonify({'error': f'Required Frida server binary not found: {binary_path}'}), 500
+        
         # Check if frida-server is running
         result = subprocess.run(
             [ADB_PATH, '-s', device_id, 'shell', 'ps | grep frida-server'],
@@ -155,11 +238,43 @@ def connect_device():
         if 'frida-server' not in result.stdout:
             # Start frida-server
             socketio.emit('status', {'message': f'Starting frida-server on {device_id}'})
-            subprocess.run(
+            
+            # Try different methods to start frida-server based on root access type
+            # First attempt - standard su -c method
+            start_result = subprocess.run(
                 [ADB_PATH, '-s', device_id, 'shell', f'su -c "{FRIDA_SERVER_PATH} &"'],
                 capture_output=True, text=True
             )
-            time.sleep(2)  # Wait for server to start
+            
+            # If that fails, try su 0 method (used in some emulators and devices)
+            if "invalid" in start_result.stderr or "not found" in start_result.stderr:
+                socketio.emit('status', {'message': f'First method failed, trying alternative root method...'})
+                start_result = subprocess.run(
+                    [ADB_PATH, '-s', device_id, 'shell', f'su 0 {FRIDA_SERVER_PATH} &'],
+                    capture_output=True, text=True
+                )
+            
+            # If that also fails, try without su (for pre-rooted emulators)
+            if "invalid" in start_result.stderr or "not found" in start_result.stderr:
+                socketio.emit('status', {'message': f'Second method failed, trying direct execution...'})
+                start_result = subprocess.run(
+                    [ADB_PATH, '-s', device_id, 'shell', f'{FRIDA_SERVER_PATH} &'],
+                    capture_output=True, text=True
+                )
+            
+            # Wait for server to start
+            time.sleep(3)
+            
+            # Verify frida-server is running
+            verify_result = subprocess.run(
+                [ADB_PATH, '-s', device_id, 'shell', 'ps | grep frida-server'],
+                capture_output=True, text=True
+            )
+            
+            if 'frida-server' in verify_result.stdout:
+                socketio.emit('status', {'message': f'Frida server started successfully'})
+            else:
+                socketio.emit('status', {'message': f'Warning: Could not verify if frida-server is running'})
         
         # Connect to the device
         device = frida.get_device(device_id)
@@ -168,16 +283,35 @@ def connect_device():
         
         # Check frida-server version
         try:
+            # First attempt with standard su -c
             version_result = subprocess.run(
                 [ADB_PATH, '-s', device_id, 'shell', f'su -c "{FRIDA_SERVER_PATH} --version"'],
                 capture_output=True, text=True
             )
+            
+            # If that fails, try su 0 method
+            if "invalid" in version_result.stderr or "not found" in version_result.stderr:
+                version_result = subprocess.run(
+                    [ADB_PATH, '-s', device_id, 'shell', f'su 0 {FRIDA_SERVER_PATH} --version'],
+                    capture_output=True, text=True
+                )
+            
+            # If that also fails, try direct execution
+            if "invalid" in version_result.stderr or "not found" in version_result.stderr:
+                version_result = subprocess.run(
+                    [ADB_PATH, '-s', device_id, 'shell', f'{FRIDA_SERVER_PATH} --version'],
+                    capture_output=True, text=True
+                )
+            
             server_version = version_result.stdout.strip()
             
-            if "16.2.2" in server_version:
-                socketio.emit('status', {'message': f'Frida server {server_version} detected (compatible)'})
+            if server_version:
+                if "16.2.2" in server_version:
+                    socketio.emit('status', {'message': f'Frida server {server_version} detected (compatible)'})
+                else:
+                    socketio.emit('status', {'message': f'Warning: Frida server {server_version} detected. This app is designed for version 16.2.2'})
             else:
-                socketio.emit('status', {'message': f'Warning: Frida server {server_version} detected. This app is designed for version 16.2.2'})
+                socketio.emit('status', {'message': f'Warning: Could not determine Frida server version'})
         except Exception as e:
             # Just log it, don't block the connection
             socketio.emit('status', {'message': f'Could not verify Frida server version: {str(e)}'})

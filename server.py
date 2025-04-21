@@ -32,9 +32,10 @@ CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Device management
-connected_devices = {}
-frida_sessions = {}
-running_scripts = {}
+connected_devices = {}  # device_id -> frida.core.Device
+frida_sessions = {}     # {device_id: {app_id: session}} - nested dict for multiple apps per device
+running_scripts = {}    # {device_id: {app_id: script}} - nested dict for multiple scripts per device
+device_status = {}      # For tracking each device's status separately
 
 # Routes for static frontend
 @app.route('/', defaults={'path': ''})
@@ -90,11 +91,37 @@ def get_devices():
                 if len(parts) >= 2:
                     device_id = parts[0].strip()
                     status = parts[1].strip()
-                    devices.append({
+                    
+                    # Get additional device info for connected devices
+                    device_info = {
                         'id': device_id,
                         'status': status,
-                        'connected': device_id in connected_devices
-                    })
+                        'connected': device_id in connected_devices,
+                        'apps': [],
+                        'frida_server': False
+                    }
+                    
+                    # If device is connected to our app, get more info
+                    if device_id in connected_devices:
+                        # Check how many apps are hooked
+                        if device_id in frida_sessions:
+                            device_info['apps'] = list(frida_sessions[device_id].keys())
+                        
+                        # Check if frida-server is running
+                        try:
+                            frida_check = subprocess.run(
+                                [ADB_PATH, '-s', device_id, 'shell', 'ps | grep frida-server'],
+                                capture_output=True, text=True
+                            )
+                            device_info['frida_server'] = 'frida-server' in frida_check.stdout
+                        except:
+                            pass
+                        
+                        # Add device status info if available
+                        if device_id in device_status:
+                            device_info.update(device_status[device_id])
+                    
+                    devices.append(device_info)
         
         return jsonify(devices)
     except Exception as e:
@@ -279,6 +306,12 @@ def connect_device():
         # Connect to the device
         device = frida.get_device(device_id)
         connected_devices[device_id] = device
+        
+        # Initialize the nested dictionaries for this device
+        frida_sessions[device_id] = {}
+        running_scripts[device_id] = {}
+        device_status[device_id] = {'status': 'connected', 'last_connected': time.time()}
+        
         socketio.emit('status', {'message': f'Connected to {device_id}'})
         
         # Check frida-server version
@@ -329,12 +362,31 @@ def disconnect_device():
         return jsonify({'error': 'Device ID is required'}), 400
     
     try:
+        # Clean up all frida sessions for this device
         if device_id in frida_sessions:
-            frida_sessions[device_id].detach()
+            for app_id, session in frida_sessions[device_id].items():
+                try:
+                    session.detach()
+                except Exception as e:
+                    socketio.emit('status', {'message': f'[Device: {device_id}] Error detaching session for {app_id}: {str(e)}'})
             del frida_sessions[device_id]
         
+        # Clean up all running scripts for this device
+        if device_id in running_scripts:
+            for app_id, script in running_scripts[device_id].items():
+                try:
+                    script.unload()
+                except Exception as e:
+                    socketio.emit('status', {'message': f'[Device: {device_id}] Error unloading script for {app_id}: {str(e)}'})
+            del running_scripts[device_id]
+        
+        # Remove the device from connected_devices
         if device_id in connected_devices:
             del connected_devices[device_id]
+        
+        # Clean up any device status
+        if device_id in device_status:
+            del device_status[device_id]
         
         socketio.emit('status', {'message': f'Disconnected from {device_id}'})
         return jsonify({'status': 'disconnected', 'deviceId': device_id})
@@ -519,19 +571,40 @@ console.log('Frida script injected and console.log interceptor initialized');
                     is_running = True
                     break
         except Exception as e:
-            socketio.emit('status', {'message': f'Error checking if app is running: {str(e)}'})
+            socketio.emit('status', {'message': f'[Device: {device_id}] Error checking if app is running: {str(e)}'})
         
         # If not running, try to spawn it
         pid = None
         if not is_running:
             try:
-                socketio.emit('status', {'message': f'App {app_id} is not running. Attempting to launch it...'})
+                socketio.emit('status', {'message': f'[Device: {device_id}] App {app_id} is not running. Attempting to launch it...'})
                 pid = device.spawn([app_id])
-                socketio.emit('status', {'message': f'App launched with PID: {pid}'})
+                socketio.emit('status', {'message': f'[Device: {device_id}] App launched with PID: {pid}'})
                 time.sleep(1)  # Give it a moment to start up
             except Exception as e:
-                socketio.emit('status', {'message': f'Failed to launch app: {str(e)}'})
+                socketio.emit('status', {'message': f'[Device: {device_id}] Failed to launch app: {str(e)}'})
                 # Even if spawn fails, we'll still try to attach directly
+        
+        # Initialize nested dictionaries if they don't exist
+        if device_id not in frida_sessions:
+            frida_sessions[device_id] = {}
+            
+        if device_id not in running_scripts:
+            running_scripts[device_id] = {}
+            
+        # Detach existing session if there's one for this app
+        if app_id in frida_sessions[device_id]:
+            try:
+                frida_sessions[device_id][app_id].detach()
+            except Exception as e:
+                socketio.emit('status', {'message': f'[Device: {device_id}] Error detaching previous session: {str(e)}'})
+        
+        # Unload existing script if there's one for this app
+        if app_id in running_scripts[device_id]:
+            try:
+                running_scripts[device_id][app_id].unload()
+            except Exception as e:
+                socketio.emit('status', {'message': f'[Device: {device_id}] Error unloading previous script: {str(e)}'})
         
         # Attach to the process
         try:
@@ -543,7 +616,7 @@ console.log('Frida script injected and console.log interceptor initialized');
                 # Try to attach by name if we didn't spawn it
                 session = device.attach(app_id)
             
-            frida_sessions[device_id] = session
+            frida_sessions[device_id][app_id] = session
         except Exception as e:
             error_msg = str(e)
             if "unable to find process with name" in error_msg:
@@ -554,9 +627,9 @@ console.log('Frida script injected and console.log interceptor initialized');
                 # First try exact match on process name
                 for process in processes:
                     if process.name == app_id:
-                        socketio.emit('status', {'message': f'Found process: {process.name} (PID: {process.pid})'})
+                        socketio.emit('status', {'message': f'[Device: {device_id}] Found process: {process.name} (PID: {process.pid})'})
                         session = device.attach(process.pid)
-                        frida_sessions[device_id] = session
+                        frida_sessions[device_id][app_id] = session
                         found = True
                         break
                 
@@ -564,16 +637,16 @@ console.log('Frida script injected and console.log interceptor initialized');
                 if not found:
                     for process in processes:
                         if app_id in process.name:
-                            socketio.emit('status', {'message': f'Found similar process: {process.name} (PID: {process.pid})'})
+                            socketio.emit('status', {'message': f'[Device: {device_id}] Found similar process: {process.name} (PID: {process.pid})'})
                             session = device.attach(process.pid)
-                            frida_sessions[device_id] = session
+                            frida_sessions[device_id][app_id] = session
                             found = True
                             break
                 
                 # If still not found, run an adb shell command to try to start the app and get its PID
                 if not found:
                     try:
-                        socketio.emit('status', {'message': f'Trying to start app via activity manager...'})
+                        socketio.emit('status', {'message': f'[Device: {device_id}] Trying to start app via activity manager...'})
                         # Try to start the app using activity manager
                         cmd = f'monkey -p {app_id} -c android.intent.category.LAUNCHER 1'
                         adb_result = subprocess.run(
@@ -592,31 +665,34 @@ console.log('Frida script injected and console.log interceptor initialized');
                         if pid_result.stdout.strip():
                             try:
                                 app_pid = int(pid_result.stdout.strip())
-                                socketio.emit('status', {'message': f'App started with PID: {app_pid}'})
+                                socketio.emit('status', {'message': f'[Device: {device_id}] App started with PID: {app_pid}'})
                                 session = device.attach(app_pid)
-                                frida_sessions[device_id] = session
+                                frida_sessions[device_id][app_id] = session
                                 found = True
                             except ValueError:
-                                socketio.emit('status', {'message': f'Invalid PID: {pid_result.stdout.strip()}'})
+                                socketio.emit('status', {'message': f'[Device: {device_id}] Invalid PID: {pid_result.stdout.strip()}'})
                     except Exception as start_error:
-                        socketio.emit('status', {'message': f'Error trying to start app: {str(start_error)}'})
+                        socketio.emit('status', {'message': f'[Device: {device_id}] Error trying to start app: {str(start_error)}'})
                 
                 if not found:
                     return jsonify({
-                        'error': f"Could not find process with name '{app_id}'. Make sure the app is installed and the package name is correct. Try launching the app manually first."
+                        'error': f"Could not find process with name '{app_id}' on device '{device_id}'. Make sure the app is installed and the package name is correct. Try launching the app manually first."
                     }), 500
             else:
-                return jsonify({'error': error_msg}), 500
+                return jsonify({'error': f"[Device: {device_id}] {error_msg}"}), 500
         
-        # Create and load script
-        script = session.create_script(enhanced_script)
+        # Create and load the script
+        script = frida_sessions[device_id][app_id].create_script(enhanced_script)
         script.on('message', on_message)
         script.load()
-        running_scripts[f"{device_id}_{app_id}"] = script
         
-        return jsonify({'status': 'hooked', 'deviceId': device_id, 'appId': app_id})
+        # Store the script
+        running_scripts[device_id][app_id] = script
+        
+        socketio.emit('status', {'message': f'[Device: {device_id}] Successfully hooked into {app_id}'})
+        return jsonify({'status': 'success'})
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f"[Device: {device_id}] {str(e)}"}), 500
 
 @app.route('/api/unhook', methods=['POST'])
 def unhook_app():
@@ -627,16 +703,35 @@ def unhook_app():
     if not all([device_id, app_id]):
         return jsonify({'error': 'Device ID and App ID are required'}), 400
     
-    script_key = f"{device_id}_{app_id}"
-    if script_key in running_scripts:
-        try:
-            running_scripts[script_key].unload()
-            del running_scripts[script_key]
-            return jsonify({'status': 'unhooked', 'deviceId': device_id, 'appId': app_id})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-    else:
-        return jsonify({'error': 'No hook found for this app'}), 404
+    try:
+        # Initialize dictionaries if they don't exist
+        if device_id not in running_scripts:
+            running_scripts[device_id] = {}
+            
+        if device_id not in frida_sessions:
+            frida_sessions[device_id] = {}
+            
+        # Unload script if it exists
+        if app_id in running_scripts[device_id]:
+            try:
+                running_scripts[device_id][app_id].unload()
+                del running_scripts[device_id][app_id]
+                socketio.emit('status', {'message': f'[Device: {device_id}] Script unloaded from {app_id}'})
+            except Exception as e:
+                socketio.emit('status', {'message': f'[Device: {device_id}] Error unloading script: {str(e)}'})
+        
+        # Detach session if it exists
+        if app_id in frida_sessions[device_id]:
+            try:
+                frida_sessions[device_id][app_id].detach()
+                del frida_sessions[device_id][app_id]
+                socketio.emit('status', {'message': f'[Device: {device_id}] Detached from {app_id}'})
+            except Exception as e:
+                socketio.emit('status', {'message': f'[Device: {device_id}] Error detaching session: {str(e)}'})
+        
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': f'[Device: {device_id}] {str(e)}'}), 500
 
 @app.route('/api/execute', methods=['POST'])
 def execute_command():

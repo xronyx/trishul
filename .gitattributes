@@ -1,1 +1,2 @@
 bin/frida-server-* filter=lfs diff=lfs merge=lfs -text
+bin/frida-server-16.2.2-android-* filter=lfs diff=lfs merge=lfs -text
